@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
+<meta http-equiv="content-type" content="text/html; charset=utf-8">
+<title>Call</title>
+<script src="adapter.js"></script>
+<link rel="stylesheet" href="style.css">
+
+<div class="viewport">
+  <video id="video-them" autoplay></video>
+  <video id="video-me" autoplay></video>
+  <div class="status" id="status-box"></div>
+</div>
+
+<script>
+var video_me = document.getElementById('video-me');
+var video_them = document.getElementById('video-them');
+var status_box = document.getElementById('status-box');
+var path_prefix = '/';
+if (window.location.pathname != '/') {
+    path_prefix = window.location.pathname.split('/').slice(0, -1).join('/');
+}
+var ws, pc, dc;
+video_me.volume = 0;
+
+var status_handle = null;
+function postStatus(msg, persistent) {
+    status_box.innerHTML = msg;
+    status_box.className = 'status';
+    clearTimeout(status_handle);
+    if (!persistent) {
+        status_handle = setTimeout(function() {
+            status_box.className = 'status hidden';
+        }, 5000);
+    }
+}
+
+function setupDataChannel(dc) {
+    dc.addEventListener('open', function(e) {
+        dc.send('hello');
+    });
+    dc.addEventListener('message', function(e) {
+        console.log('Got data:', e.data);
+        last_message = e.data;
+    });
+    dc.addEventListener('close', function(e) {
+        postStatus('Connection closed.', true);
+        dc.close();
+        pc.close();
+    });
+}
+
+function setupRTC() {
+    pc = new RTCPeerConnection();
+    pc.addEventListener('addstream', function(e) {
+        video_them.src = URL.createObjectURL(e.stream);
+        postStatus('Stream connected!');
+    });
+    pc.addEventListener('removestream', function(e) {
+        video_them.src = null;
+        postStatus('Stream disconnected.');
+    });
+    pc.addEventListener('icecandidate', function(e) {
+        if (e.candidate) {
+            console.log('ICE candidate', e.candidate);
+            switchboardSend('ice', JSON.stringify(e.candidate));
+        }
+    });
+    pc.addEventListener('iceconnectionstatechange', function(e) {
+        if (pc.iceConnectionState == 'connected') {
+            switchboardSend('connected');
+            ws.close();
+        }
+        console.log('ICE connection state: ', pc.iceConnectionState);
+    });
+    pc.addEventListener('signalingstatechange', function(e) {
+        console.log('RTC signal state: ', pc.signalingState);
+    });
+    pc.addEventListener('datachannel', function(e) {
+        dc = e.channel;
+        setupDataChannel(dc);
+    });
+}
+
+function sendOffer(offer) {
+    switchboardSend('offer', JSON.stringify(offer));
+    postStatus('Waiting for answer...', true);
+}
+
+function sendAnswer(answer) {
+    switchboardSend('answer', JSON.stringify(answer));
+    postStatus('Waiting for caller...', true);
+}
+
+function getCallStatus() {
+    return new Promise(function(resolve, reject) {
+        var req = new XMLHttpRequest();
+        req.addEventListener('load', function(e) {
+            var j = JSON.parse(req.responseText);
+            resolve(j);
+        });
+        req.open('GET', '/callstatus');
+        req.send();
+    });
+}
+
+function waitForStatus(s) {
+    return getCallStatus().then(function(r) {
+        if (r.status == s) {
+            return r;
+        } else {
+            return new Promise(function(resolve, reject) {
+                setTimeout(function() {
+                    resolve(waitForStatus(s));
+                }, 1000);
+            });
+        }
+    });
+}
+
+function callRemote(pc) {
+    pc.createOffer().then(function(offer) {
+        var sdp = new RTCSessionDescription(offer);
+        return pc.setLocalDescription(sdp).then(function() {
+            sendOffer(offer);
+        });
+    }).catch(function(e) {
+        console.log("In call", e);
+    });
+}
+
+function answerRemote(pc, offer) {
+    console.log("Have offer: ", offer);
+    pc.setRemoteDescription(new RTCSessionDescription(offer)).then(function() {;
+        return pc.createAnswer();
+    }).then(function(answer) {
+        return pc.setLocalDescription(new RTCSessionDescription(answer)).then(function() {
+            return sendAnswer(answer);
+        });
+    }).then(function() {
+        console.log('call connected');
+    }).catch(function(e) {
+        console.log("In answer", e);
+    });
+}
+
+function connectToSwitchboard(session_name) {
+    return new Promise(function(resolve, reject) {
+        ws = new WebSocket('wss://' + location.host + path_prefix + '/' + session_name + '/switchboard');
+        ws.onopen = function(e) {
+            resolve();
+        };
+        ws.onerror = function(e) {
+            reject(e);
+        };
+        ws.onclose = function(e) {
+            //connectToSwitchboard(session_name);
+        };
+        ws.onmessage = function(e) {
+            var j = JSON.parse(e.data);
+            var type = j[0];
+            var payload = j[1];
+            switch (type) {
+            case 'ice':
+                var candidate = JSON.parse(payload);
+                console.log('Got ICE candidate from peer', candidate);
+                pc.addIceCandidate(new RTCIceCandidate(candidate));
+                break;
+            case 'initiate':
+                dc = pc.createDataChannel('chat', {});
+                setupDataChannel(dc);
+                postStatus('Initiating call...');
+                callRemote(pc);
+                break;
+            case 'offer':
+                postStatus('Joining call...');
+                var offer = JSON.parse(payload);
+                answerRemote(pc, offer);
+                break;
+            case 'answer':
+                var answer = JSON.parse(payload);
+                console.log("Have answer: ", answer);
+                var sdp = new RTCSessionDescription(answer);
+                pc.setRemoteDescription(sdp);
+                break;
+            }
+        };
+    });
+}
+
+function switchboardSend(type, message) {
+    ws.send(JSON.stringify([type, message]));
+}
+
+window.addEventListener('load', function() {
+    var session_name = decodeURIComponent(location.pathname.split('/').pop());
+    session_name = session_name.replace(/[^a-zA-Z0-9]/g, '');
+    console.log('session ' + session_name);
+    postStatus('Connecting to switchboard...');
+    connectToSwitchboard(session_name).then(function() {
+        postStatus('Finding local media devices...');
+        setupRTC();
+        return navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: { width: window.innerHeight, height: window.innerWidth },
+        });
+    }).then(function(mediaStream) {
+        video_me.src = URL.createObjectURL(mediaStream);
+        pc.addStream(mediaStream);
+        switchboardSend('ready');
+        postStatus('Checking call status...');
+    }).catch(function(e) {
+        postStatus('Failed while loading');
+        console.log('In load', e);
+    });
+    window.addEventListener('beforeunload', function(e) {
+        dc.close();
+        pc.close();
+    });
+});
+</script>

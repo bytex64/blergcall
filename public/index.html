@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
+<meta http-equiv="content-type" content="text/html; charset=utf-8">
+<link rel="stylesheet" href="style.css">
+<title>BlërgCall</title>
+
+<article>
+<div class="jepsen">
+Hey, I just met you,<br>
+And this is crazy,<br>
+But here's my number:<br>
+<input type="text" id="number" size=20><p>
+
+<button class="obnoxious" onclick="call()">So call me maybe</button>
+</div>
+
+<p>Unlike an actual phone system, the above number is a rendezvous identifier
+&mdash; that is, it describes the meeting point between you and the person you
+are talking to. Start the call on your end, then share the identifier with your
+friend and have them punch it in; or just share the resulting URL. You can put
+anything there; spaces and punctuation are ignored.  <code>1 (484)
+487-1204</code> is the same as <code>14844871204</code> and <code>cat
+fun!</code> is the same as <code>catfun</code>.  This is a one-on-one system,
+and the identifier is only valid during rendezvous.  If a third person uses the
+same identifier, it will start a new session.
+
+</article>
+
+<script>
+var number;
+
+function generateNumber() {
+    var n = '';
+    for (var i = 0; i < 10; i++) {
+        n += Math.floor(Math.random() * 10);
+    }
+    return '1 (' + n.slice(0,3) + ') ' + n.slice(3,6) + '-' + n.slice(6);
+}
+
+function call() {
+    window.location = window.location.pathname + number.value;
+}
+
+window.addEventListener('load', function() {
+    number = document.getElementById('number');
+    number.value = generateNumber();
+});
+</script>
